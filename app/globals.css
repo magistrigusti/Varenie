@@ -175,6 +175,7 @@ a {
 }
 
 .mode-tabs,
+.language-tabs,
 .theme-segment,
 .settings-row {
   display: flex;
@@ -186,7 +187,15 @@ a {
   gap: 4px;
 }
 
+.library-controls {
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+}
+
 .mode-tabs button,
+.language-tabs button,
 .theme-segment button {
   min-height: 36px;
   display: inline-flex;
@@ -204,7 +213,19 @@ a {
   white-space: nowrap;
 }
 
+.language-tabs {
+  padding: 3px;
+}
+
+.language-tabs button {
+  min-height: 30px;
+  min-width: 82px;
+  font-size: 12px;
+  padding: 0 12px;
+}
+
 .mode-tabs button.active,
+.language-tabs button.active,
 .theme-segment button.active,
 .settings-row button.active {
   background: var(--surface-raised);
@@ -914,6 +935,7 @@ input[type="range"] {
   }
 
   .mode-tabs,
+  .language-tabs,
   .theme-segment {
     justify-self: stretch;
     width: 100%;
@@ -922,11 +944,16 @@ input[type="range"] {
   }
 
   .mode-tabs button,
+  .language-tabs button,
   .theme-segment button {
     flex: 1;
     min-width: 0;
     padding: 0 8px;
     font-size: 13px;
+  }
+
+  .library-controls {
+    justify-items: stretch;
   }
 
   .workspace {

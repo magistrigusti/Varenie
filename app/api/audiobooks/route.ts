@@ -74,12 +74,23 @@ const CACHE_HEADERS = {
   "Cache-Control": "public, s-maxage=900, stale-while-revalidate=86400"
 };
 
+const LANGUAGE_CONFIG = {
+  en: "English",
+  ru: "Russian"
+} as const;
+
+type LibraryLanguage = keyof typeof LANGUAGE_CONFIG;
+
 function safeQuery(value: string): string {
   return value
     .replace(/[^\p{L}\p{N}\s'".:-]/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 100);
+}
+
+function safeLanguage(value: string | null): LibraryLanguage {
+  return value === "en" ? "en" : "ru";
 }
 
 function compactText(value: unknown): string {
@@ -144,12 +155,18 @@ function normalizeBook(book: LibrivoxBook): AudioBook | null {
   };
 }
 
-async function fetchLibriVox(query: string, genre: string, page: number): Promise<AudioBook[]> {
+async function fetchLibriVox(
+  query: string,
+  genre: string,
+  page: number,
+  language: LibraryLanguage
+): Promise<AudioBook[]> {
   const limit = 18;
   const params = new URLSearchParams({
     format: "json",
     extended: "1",
     coverart: "1",
+    language: LANGUAGE_CONFIG[language],
     limit: String(limit),
     offset: String((page - 1) * limit)
   });
@@ -184,7 +201,10 @@ async function fetchLibriVox(query: string, genre: string, page: number): Promis
     }
 
     const payload = (await response.json()) as { books?: LibrivoxBook[] };
-    return (payload.books ?? []).map(normalizeBook).filter(Boolean) as AudioBook[];
+    return (payload.books ?? [])
+      .map(normalizeBook)
+      .filter((book): book is AudioBook => Boolean(book))
+      .filter((book) => book.language === LANGUAGE_CONFIG[language]);
   } catch {
     return [];
   } finally {
@@ -196,15 +216,17 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const query = safeQuery(url.searchParams.get("q") ?? "");
   const genre = safeQuery(url.searchParams.get("genre") ?? "");
+  const language = safeLanguage(url.searchParams.get("language"));
   const page = Math.max(1, Number(url.searchParams.get("page") ?? "1") || 1);
 
-  const items = await fetchLibriVox(query, genre, page);
+  const items = await fetchLibriVox(query, genre, page, language);
 
   return NextResponse.json(
     {
       items,
       query,
       genre,
+      language,
       providers: ["LibriVox"]
     },
     { headers: CACHE_HEADERS }

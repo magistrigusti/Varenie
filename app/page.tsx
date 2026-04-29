@@ -24,6 +24,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "re
 type Mode = "books" | "audio";
 type ThemeMode = "sun" | "day" | "dark";
 type ReaderOrientation = "portrait" | "landscape";
+type LibraryLanguage = "ru" | "en";
 
 type BookItem = {
   id: string;
@@ -114,6 +115,11 @@ const THEMES: Array<{ value: ThemeMode; label: string; icon: typeof Sun }> = [
   { value: "dark", label: "Тьма", icon: Moon }
 ];
 
+const LIBRARY_LANGUAGES: Array<{ value: LibraryLanguage; label: string }> = [
+  { value: "ru", label: "Русский" },
+  { value: "en", label: "English" }
+];
+
 const themeChrome: Record<ThemeMode, { header: string; background: string }> = {
   sun: { header: "#fff0a8", background: "#fff7cf" },
   day: { header: "#f4efe5", background: "#f7f4ed" },
@@ -173,6 +179,7 @@ function Cover({
 export default function Home() {
   const [mode, setMode] = useState<Mode>("books");
   const [theme, setTheme] = useState<ThemeMode>("day");
+  const [language, setLanguage] = useState<LibraryLanguage>("ru");
 
   const [bookSearch, setBookSearch] = useState("");
   const [bookGenre, setBookGenre] = useState(BOOK_GENRES[0].apiQuery);
@@ -263,9 +270,10 @@ export default function Home() {
       if (bookSearch.trim()) {
         params.set("q", bookSearch.trim());
       }
-      if (bookGenre) {
-        params.set("genre", bookGenre);
-      }
+    if (bookGenre) {
+      params.set("genre", bookGenre);
+    }
+      params.set("language", language);
 
       try {
         const response = await fetch(`/api/books?${params}`, { signal });
@@ -288,7 +296,7 @@ export default function Home() {
         }
       }
     },
-    [bookGenre, bookSearch]
+    [bookGenre, bookSearch, language]
   );
 
   const loadAudio = useCallback(
@@ -300,9 +308,10 @@ export default function Home() {
       if (audioSearch.trim()) {
         params.set("q", audioSearch.trim());
       }
-      if (audioGenre) {
-        params.set("genre", audioGenre);
-      }
+    if (audioGenre) {
+      params.set("genre", audioGenre);
+    }
+      params.set("language", language);
 
       try {
         const response = await fetch(`/api/audiobooks?${params}`, { signal });
@@ -324,7 +333,7 @@ export default function Home() {
         }
       }
     },
-    [audioGenre, audioSearch]
+    [audioGenre, audioSearch, language]
   );
 
   useEffect(() => {
@@ -519,16 +528,31 @@ export default function Home() {
           </div>
         </div>
 
-        <nav className="mode-tabs" aria-label="Раздел">
-          <button className={mode === "books" ? "active" : ""} type="button" onClick={() => setMode("books")}>
-            <BookOpen size={17} />
-            Книги
-          </button>
-          <button className={mode === "audio" ? "active" : ""} type="button" onClick={() => setMode("audio")}>
-            <Headphones size={17} />
-            Аудио
-          </button>
-        </nav>
+        <div className="library-controls">
+          <nav className="mode-tabs" aria-label="Раздел">
+            <button className={mode === "books" ? "active" : ""} type="button" onClick={() => setMode("books")}>
+              <BookOpen size={17} />
+              Книги
+            </button>
+            <button className={mode === "audio" ? "active" : ""} type="button" onClick={() => setMode("audio")}>
+              <Headphones size={17} />
+              Аудио
+            </button>
+          </nav>
+
+          <div className="language-tabs" aria-label="Язык каталога">
+            {LIBRARY_LANGUAGES.map((item) => (
+              <button
+                key={item.value}
+                className={language === item.value ? "active" : ""}
+                type="button"
+                onClick={() => setLanguage(item.value)}
+              >
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
 
         <div className="theme-segment" aria-label="Настройки темы">
           {THEMES.map((item) => {

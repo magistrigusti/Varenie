@@ -42,6 +42,7 @@ type ArchiveDoc = {
   creator?: string | string[];
   date?: string;
   subject?: string | string[];
+  language?: string | string[];
   downloads?: number;
 };
 
@@ -66,6 +67,20 @@ const CACHE_HEADERS = {
 };
 
 const DEFAULT_QUERY = "classic literature";
+const LANGUAGE_CONFIG = {
+  en: {
+    gutendex: "en",
+    openLibrary: "eng",
+    archive: "English"
+  },
+  ru: {
+    gutendex: "ru",
+    openLibrary: "rus",
+    archive: "Russian"
+  }
+} as const;
+
+type LibraryLanguage = keyof typeof LANGUAGE_CONFIG;
 
 function compactText(value: unknown): string {
   return String(value ?? "")
@@ -84,6 +99,10 @@ function safeQuery(value: string): string {
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 100);
+}
+
+function safeLanguage(value: string | null): LibraryLanguage {
+  return value === "en" ? "en" : "ru";
 }
 
 function archivePhrase(value: string): string {
@@ -198,7 +217,7 @@ function normalizeArchive(doc: ArchiveDoc): UnifiedBook | null {
     year,
     cover: `https://archive.org/services/img/${identifier}`,
     subjects: compactList(doc.subject, 8),
-    languages: [],
+    languages: compactList(doc.language, 4),
     downloads: doc.downloads,
     sourceUrl: `https://archive.org/details/${identifier}`,
     readUrl: `/api/read?source=archive&url=${encodeURIComponent(textUrl)}`,
@@ -206,9 +225,14 @@ function normalizeArchive(doc: ArchiveDoc): UnifiedBook | null {
   };
 }
 
-async function getGutendexBooks(query: string, genre: string, page: number): Promise<UnifiedBook[]> {
+async function getGutendexBooks(
+  query: string,
+  genre: string,
+  page: number,
+  language: LibraryLanguage
+): Promise<UnifiedBook[]> {
   const params = new URLSearchParams({
-    languages: "en,ru",
+    languages: LANGUAGE_CONFIG[language].gutendex,
     mime_type: "text/",
     sort: "popular",
     page: String(page)
@@ -226,11 +250,17 @@ async function getGutendexBooks(query: string, genre: string, page: number): Pro
   return (payload?.results ?? []).map(normalizeGutendex);
 }
 
-async function getOpenLibraryBooks(query: string, genre: string, page: number): Promise<UnifiedBook[]> {
+async function getOpenLibraryBooks(
+  query: string,
+  genre: string,
+  page: number,
+  language: LibraryLanguage
+): Promise<UnifiedBook[]> {
   const params = new URLSearchParams({
     q: query || genre || DEFAULT_QUERY,
     limit: "16",
     page: String(page),
+    language: LANGUAGE_CONFIG[language].openLibrary,
     fields:
       "key,title,author_name,first_publish_year,cover_i,edition_count,subject,language,has_fulltext,public_scan_b,ia,ebook_access"
   });
@@ -240,10 +270,18 @@ async function getOpenLibraryBooks(query: string, genre: string, page: number): 
   }
 
   const payload = await fetchJson<{ docs?: OpenLibraryDoc[] }>(`https://openlibrary.org/search.json?${params}`);
-  return (payload?.docs ?? []).map(normalizeOpenLibrary).filter(Boolean) as UnifiedBook[];
+  return (payload?.docs ?? [])
+    .filter((doc) => doc.language?.includes(LANGUAGE_CONFIG[language].openLibrary))
+    .map(normalizeOpenLibrary)
+    .filter(Boolean) as UnifiedBook[];
 }
 
-async function getArchiveBooks(query: string, genre: string, page: number): Promise<UnifiedBook[]> {
+async function getArchiveBooks(
+  query: string,
+  genre: string,
+  page: number,
+  language: LibraryLanguage
+): Promise<UnifiedBook[]> {
   const params = new URLSearchParams({
     output: "json",
     rows: "14",
@@ -252,11 +290,11 @@ async function getArchiveBooks(query: string, genre: string, page: number): Prom
   });
 
   const q = query
-    ? `title:(${archivePhrase(query)}) AND mediatype:texts`
-    : `subject:${archivePhrase(genre || "classic literature")} AND mediatype:texts`;
+    ? `title:(${archivePhrase(query)}) AND mediatype:texts AND language:${archivePhrase(LANGUAGE_CONFIG[language].archive)}`
+    : `subject:${archivePhrase(genre || "classic literature")} AND mediatype:texts AND language:${archivePhrase(LANGUAGE_CONFIG[language].archive)}`;
 
   params.set("q", q);
-  ["identifier", "title", "creator", "date", "subject", "downloads"].forEach((field) => {
+  ["identifier", "title", "creator", "date", "subject", "language", "downloads"].forEach((field) => {
     params.append("fl[]", field);
   });
 
@@ -287,12 +325,13 @@ export async function GET(request: Request) {
   const url = new URL(request.url);
   const query = safeQuery(url.searchParams.get("q") ?? "");
   const genre = safeQuery(url.searchParams.get("genre") ?? "");
+  const language = safeLanguage(url.searchParams.get("language"));
   const page = Math.max(1, Number(url.searchParams.get("page") ?? "1") || 1);
 
   const responses = await Promise.allSettled([
-    getGutendexBooks(query, genre, page),
-    getOpenLibraryBooks(query, genre, page),
-    getArchiveBooks(query, genre, page)
+    getGutendexBooks(query, genre, page, language),
+    getOpenLibraryBooks(query, genre, page, language),
+    getArchiveBooks(query, genre, page, language)
   ]);
 
   const books = responses.flatMap((response) => (response.status === "fulfilled" ? response.value : []));
@@ -302,6 +341,7 @@ export async function GET(request: Request) {
       items: dedupeBooks(books),
       query,
       genre,
+      language,
       providers: ["Gutendex", "Open Library", "Internet Archive"],
       partial: responses.some((response) => response.status === "rejected")
     },
