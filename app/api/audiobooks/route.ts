@@ -12,6 +12,10 @@ type LibrivoxGenre = {
   name?: string;
 };
 
+type LibrivoxReader = {
+  display_name?: string;
+};
+
 type LibrivoxSection = {
   id?: string | number;
   section_number?: string | number;
@@ -21,6 +25,24 @@ type LibrivoxSection = {
   playtime?: string;
   playtime_secs?: string | number;
   reader?: string;
+  readers?: LibrivoxReader[];
+};
+
+type GutendexPerson = {
+  name?: string;
+};
+
+type GutendexBook = {
+  id: number;
+  title?: string;
+  authors?: GutendexPerson[];
+  subjects?: string[];
+  bookshelves?: string[];
+  languages?: string[];
+  media_type?: string;
+  formats?: Record<string, string>;
+  summaries?: string[];
+  download_count?: number;
 };
 
 type LibrivoxBook = {
@@ -54,7 +76,7 @@ type AudioTrack = {
 
 type AudioBook = {
   id: string;
-  provider: "LibriVox";
+  provider: "LibriVox" | "Gutendex";
   title: string;
   authors: string[];
   description?: string;
@@ -75,8 +97,14 @@ const CACHE_HEADERS = {
 };
 
 const LANGUAGE_CONFIG = {
-  en: "English",
-  ru: "Russian"
+  en: {
+    gutendex: "en",
+    librivox: "English"
+  },
+  ru: {
+    gutendex: "ru",
+    librivox: "Russian"
+  }
 } as const;
 
 type LibraryLanguage = keyof typeof LANGUAGE_CONFIG;
@@ -97,6 +125,11 @@ function compactText(value: unknown): string {
   return String(value ?? "")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function compactList(values: unknown, limit = 8): string[] {
+  const list = Array.isArray(values) ? values : values ? [values] : [];
+  return list.map(compactText).filter(Boolean).slice(0, limit);
 }
 
 function numberOrUndefined(value: unknown): number | undefined {
@@ -124,7 +157,7 @@ function normalizeTrack(section: LibrivoxSection, index: number): AudioTrack | n
     listenUrl,
     duration: durationSeconds && /^\d+$/.test(playtime) ? undefined : playtime || undefined,
     durationSeconds,
-    reader: compactText(section.reader) || undefined
+    reader: compactText(section.reader) || compactList(section.readers?.map((reader) => reader.display_name), 2).join(", ") || undefined
   };
 }
 
@@ -155,6 +188,90 @@ function normalizeBook(book: LibrivoxBook): AudioBook | null {
   };
 }
 
+function pickAudioUrl(formats: Record<string, string> | undefined): string | undefined {
+  if (!formats) {
+    return undefined;
+  }
+
+  const entries = Object.entries(formats).filter(([, url]) => !url.endsWith(".zip"));
+  const preferredTypes = ["audio/mpeg", "audio/mp4", "audio/ogg"];
+
+  for (const type of preferredTypes) {
+    const match = entries.find(([format]) => format.startsWith(type));
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+
+  return entries.find(([format]) => format.startsWith("audio/"))?.[1];
+}
+
+function pickAudioZip(formats: Record<string, string> | undefined): string | undefined {
+  if (!formats) {
+    return undefined;
+  }
+
+  return Object.entries(formats).find(([format, url]) => format === "application/octet-stream" && url.endsWith(".zip"))?.[1];
+}
+
+function normalizeGutendexAudio(book: GutendexBook, language: LibraryLanguage): AudioBook | null {
+  if (!book.id || !book.title || compactText(book.media_type).toLowerCase() !== "sound") {
+    return null;
+  }
+
+  const listenUrl = pickAudioUrl(book.formats);
+  if (!listenUrl) {
+    return null;
+  }
+
+  const title = compactText(book.title);
+  return {
+    id: `gutendex-audio-${book.id}`,
+    provider: "Gutendex",
+    title,
+    authors: compactList(book.authors?.map((author) => author.name), 4),
+    description: compactText(book.summaries?.[0]) || undefined,
+    language: LANGUAGE_CONFIG[language].librivox,
+    genres: compactList([...(book.subjects ?? []), ...(book.bookshelves ?? [])], 8),
+    cover: compactText(book.formats?.["image/jpeg"]) || compactText(book.formats?.["image/png"]) || undefined,
+    sourceUrl: `https://www.gutenberg.org/ebooks/${book.id}`,
+    zipUrl: pickAudioZip(book.formats),
+    tracks: [
+      {
+        id: `gutendex-audio-${book.id}-track`,
+        title,
+        listenUrl
+      }
+    ]
+  };
+}
+
+async function fetchJson<T>(url: string): Promise<T | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 14000);
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        Accept: "application/json",
+        "User-Agent": "VarenieBooks/0.1"
+      },
+      signal: controller.signal,
+      next: { revalidate: 900 }
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return (await response.json()) as T;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 async function fetchLibriVox(
   query: string,
   genre: string,
@@ -166,7 +283,6 @@ async function fetchLibriVox(
     format: "json",
     extended: "1",
     coverart: "1",
-    language: LANGUAGE_CONFIG[language],
     limit: String(limit),
     offset: String((page - 1) * limit)
   });
@@ -204,12 +320,65 @@ async function fetchLibriVox(
     return (payload.books ?? [])
       .map(normalizeBook)
       .filter((book): book is AudioBook => Boolean(book))
-      .filter((book) => book.language === LANGUAGE_CONFIG[language]);
+      .filter((book) => book.language === LANGUAGE_CONFIG[language].librivox);
   } catch {
     return [];
   } finally {
     clearTimeout(timeout);
   }
+}
+
+async function fetchGutendexAudio(
+  query: string,
+  genre: string,
+  page: number,
+  language: LibraryLanguage
+): Promise<AudioBook[]> {
+  const load = async (topic: string): Promise<AudioBook[]> => {
+    const params = new URLSearchParams({
+      languages: LANGUAGE_CONFIG[language].gutendex,
+      mime_type: "audio/",
+      sort: "popular",
+      page: String(page)
+    });
+
+    if (query) {
+      params.set("search", query);
+    }
+
+    if (topic) {
+      params.set("topic", topic);
+    }
+
+    const payload = await fetchJson<{ results?: GutendexBook[] }>(`https://gutendex.com/books?${params}`);
+    return (payload?.results ?? [])
+      .map((book) => normalizeGutendexAudio(book, language))
+      .filter((book): book is AudioBook => Boolean(book));
+  };
+
+  const items = await load(genre);
+  if (items.length || query || !genre || language !== "ru") {
+    return items;
+  }
+
+  return load("");
+}
+
+function dedupeAudiobooks(books: AudioBook[]): AudioBook[] {
+  const seen = new Set<string>();
+  const deduped: AudioBook[] = [];
+
+  for (const book of books) {
+    const key = `${book.title.toLowerCase()}-${book.authors[0]?.toLowerCase() ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    deduped.push(book);
+  }
+
+  return deduped.slice(0, 36);
 }
 
 export async function GET(request: Request) {
@@ -219,15 +388,20 @@ export async function GET(request: Request) {
   const language = safeLanguage(url.searchParams.get("language"));
   const page = Math.max(1, Number(url.searchParams.get("page") ?? "1") || 1);
 
-  const items = await fetchLibriVox(query, genre, page, language);
+  const responses = await Promise.allSettled([
+    fetchLibriVox(query, genre, page, language),
+    fetchGutendexAudio(query, genre, page, language)
+  ]);
+  const items = responses.flatMap((response) => (response.status === "fulfilled" ? response.value : []));
 
   return NextResponse.json(
     {
-      items,
+      items: dedupeAudiobooks(items),
       query,
       genre,
       language,
-      providers: ["LibriVox"]
+      providers: ["LibriVox", "Gutendex"],
+      partial: responses.some((response) => response.status === "rejected")
     },
     { headers: CACHE_HEADERS }
   );

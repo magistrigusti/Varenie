@@ -98,6 +98,7 @@ const BOOK_GENRES = [
 ];
 
 const AUDIO_GENRES = [
+  { label: "Все", apiQuery: "" },
   { label: "Фантастика", apiQuery: "Science fiction" },
   { label: "Приключения", apiQuery: "Adventure" },
   { label: "Детектив", apiQuery: "Detective fiction" },
